@@ -92,6 +92,13 @@ const char * getShortString(const ShortString &s,bool onHeap)
 	return &(s.buf[0]);
 }
 
+bool copyShortString(ShortString &dest, const ShortString &src, bool srcOnHeap)
+{
+	const char * s = getShortString(src,srcOnHeap);
+	size_t len = strlen(s);
+	return setShortString(s,len,dest);
+}
+
 struct VariantDetails{
 	VariantDetails(const char * text, std::array<size_t,5> positions)
 	:pos(atoui64(&(text[positions[0]+1]),positions[1]-positions[0]-1))
@@ -109,6 +116,34 @@ struct VariantDetails{
 		other.idOnHeap = false;
 		other.refOnHeap = false;
 		other.altOnHeap = false;
+	}
+	
+	VariantDetails(const VariantDetails &other)
+	:pos(other.pos)
+	{
+		chromOnHeap=copyShortString(chrom,other.chrom,other.chromOnHeap);
+		idOnHeap=copyShortString(id,other.id,other.idOnHeap);
+		refOnHeap=copyShortString(ref,other.ref,other.refOnHeap);
+		altOnHeap=copyShortString(alt,other.alt,other.altOnHeap);
+	}
+	
+	VariantDetails()
+	:pos(0)
+	{
+		chromOnHeap = setShortString("",0,chrom);
+		idOnHeap = setShortString("",0, id);
+		refOnHeap = setShortString("",0, ref);
+		altOnHeap = setShortString("",0, alt);
+	}
+	
+	VariantDetails& operator=(const VariantDetails &other)
+	{
+		pos = other.pos;
+		chromOnHeap=copyShortString(chrom,other.chrom,other.chromOnHeap);
+		idOnHeap=copyShortString(id,other.id,other.idOnHeap);
+		refOnHeap=copyShortString(ref,other.ref,other.refOnHeap);
+		altOnHeap=copyShortString(alt,other.alt,other.altOnHeap);
+		return *this;
 	}
 	
 	~VariantDetails()
