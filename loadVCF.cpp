@@ -29,37 +29,38 @@ static const uint64_t offsets[21] = {0,'0',
         '0'*1111111111111111111ull,
         '0'*11111111111111111111ull};
 
-//convert char *s to an unsigned 64bit integer
+//convert char *s to an unsigned 32bit integer
 //len is the number of numeric characters
 //s does not require the trailing '\0'
-uint64_t atoui64(const char *str, uint8_t len)
+uint32_t atoui32(const char *str, uint8_t len)
 {
-    size_t value = 0;
-    switch (len) { // handle up to 20 digits, assume we're 64-bit
-        case 20:    value += str[len-20] * 10000000000000000000ull;
-        case 19:    value += str[len-19] * 1000000000000000000ull;
-        case 18:    value += str[len-18] * 100000000000000000ull;
-        case 17:    value += str[len-17] * 10000000000000000ull;
-        case 16:    value += str[len-16] * 1000000000000000ull;
-        case 15:    value += str[len-15] * 100000000000000ull;
-        case 14:    value += str[len-14] * 10000000000000ull;
-        case 13:    value += str[len-13] * 1000000000000ull;
-        case 12:    value += str[len-12] * 100000000000ull;
-        case 11:    value += str[len-11] * 10000000000ull;
-        case 10:    value += str[len-10] * 1000000000ull;
-        case  9:    value += str[len- 9] * 100000000ull;
-        case  8:    value += str[len- 8] * 10000000ull;
-        case  7:    value += str[len- 7] * 1000000ull;
-        case  6:    value += str[len- 6] * 100000ull;
-        case  5:    value += str[len- 5] * 10000ull;
-        case  4:    value += str[len- 4] * 1000ull;
-        case  3:    value += str[len- 3] * 100ull;
-        case  2:    value += str[len- 2] * 10ull;
-        case  1:    value += str[len- 1];
-    }
-    return value - offsets[len];
+    uint32_t value = 0;
+    switch (len) { // handle up to 10 digits, assume we're 32-bit
+            case 10:    value += str[len-10] * 1000000000;
+            case  9:    value += str[len- 9] * 100000000;
+            case  8:    value += str[len- 8] * 10000000;
+            case  7:    value += str[len- 7] * 1000000;
+            case  6:    value += str[len- 6] * 100000;
+            case  5:    value += str[len- 5] * 10000;
+            case  4:    value += str[len- 4] * 1000;
+            case  3:    value += str[len- 3] * 100;
+            case  2:    value += str[len- 2] * 10;
+            case  1:    value += str[len- 1];
+        }
+    return value - uint32_t(offsets[len]);
 }
 
+//convert null terminated char *s to an unsigned 32bit integer
+uint32_t atoui32(const char *s)
+{
+    uint32_t ret = s[0];
+    uint8_t len = 1;
+    while(s[len])
+    {
+        ret = ret*10 + s[len++];
+    }
+    return ret-uint32_t(offsets[len]);
+}
 
 constexpr size_t SHORT_STRING_LENGTH = 8;
 union ShortString
@@ -99,9 +100,18 @@ bool copyShortString(ShortString &dest, const ShortString &src, bool srcOnHeap)
 	return setShortString(s,len,dest);
 }
 
+// compresses characters as A 00 C 01 G 10 T 11)
+//afterwards dest points to the first untouched byte in buffer
+//returns wether the compression used long form or short form
+//long form uses 4 bits per character and short form uses 2 bits per character
+bool writeCompressedString(char * &dest, char * src, size_t length)
+{
+	
+}
+
 struct VariantDetails{
 	VariantDetails(const char * text, std::array<size_t,5> positions)
-	:pos(atoui64(&(text[positions[0]+1]),positions[1]-positions[0]-1))
+	:pos(atoui32(&(text[positions[0]+1]),positions[1]-positions[0]-1))
 	{
 		chromOnHeap = setShortString(text,positions[0],chrom);
 		idOnHeap = setShortString(&(text[positions[1]+1]),positions[2]-positions[1] - 1, id);
@@ -157,6 +167,113 @@ struct VariantDetails{
 		if(altOnHeap)
 			delete[] alt.buf_ptr;
 	}
+	
+	//writes given alternate allele to buf and returns bytes written
+	size_t writeAltToBuf(char * buf, int altNumber)
+	{
+		const char* alts = getAlt();
+		//go to start of nth alternate (counting from 1)
+		while(altNumber>1)
+		{
+			if(*alts==',')
+				altNumber--;
+			alts++;
+		}
+		
+		int altLength = 0;	
+		//add characters that are not \0 or ,
+		do{
+			buf[altLength] = alts[altLength];
+		}while(alts[++altLength]>='A');
+		
+		return altLength;
+	}
+	
+	//each ploid length is 0 if it is reference
+	//second ploid length is 0 if it is homozygous
+	//info byte is made up of:
+	// number of ploids |homozygous| phased or unphased | is first ploid referance | is second ploid referance |
+	// 1 bit            | 1 bit    | 1 bit              | 1 bit                    | 1 bit                     |
+	// position in genome | info bit | length of referance | length of ID | first ploid length | second ploid length | ID       | first  ploid seq | second ploid seq 
+	// 4 bytes            | 1 byte   | 1 byte              | 1 byte       | 1 byte             | 1 byte              | variable | variable         | variable  
+	//returns the amount of bytes written
+	size_t writeVariant(char * buf, const char * alleles)
+	{
+		constexpr uint8_t diploid =     0b10000000;
+		constexpr uint8_t homozygous =  0b01000000;
+		constexpr uint8_t phased =      0b00100000;
+		constexpr uint8_t firstIsRef =  0b00010000;
+		constexpr uint8_t secondIsRef = 0b00001000;
+		
+		//write position in genome
+		//force little endian representation (default for x86)
+		buf[0] = pos & 0xFF;
+		buf[1] = (pos >> 8) & 0xFF;
+		buf[2] = (pos >> 16) & 0xFF;
+		buf[3] = (pos >> 24) & 0xFF;
+		
+		const char * c = getId();
+		uint8_t idLength = 0;
+		//write ID
+		while(c[idLength]!='\0')
+		{
+			buf[9+idLength] = c[idLength];
+			idLength++;
+		}
+		//write ID length
+		buf[6] = idLength;
+		
+		//write reference length
+		buf[5] = (uint8_t)strlen(getRef());
+		
+		
+		c = alleles;
+		uint8_t infoChar = 0;
+		while(*c!='/'&&*c!='|'&&*c!='\0')
+		{
+			c++;
+		}
+		
+		uint8_t firstPloidLength = 0;
+		
+		//get first alt number
+		size_t firstAltNumber = 0;
+		if(c[-1] != '.') 
+			firstAltNumber = atoui32(alleles,c-alleles);	
+		//write first allele
+		if(firstAltNumber == 0)
+			infoChar |= firstIsRef;
+		else
+			firstPloidLength = writeAltToBuf(buf+9+idLength,firstAltNumber);
+		buf[7] = firstPloidLength;
+		
+		//second allele (if diploid)
+		uint8_t secondPloidLength = 0;
+		if(*c!='\0')//diploid
+		{
+			infoChar |= diploid;
+			if(*c == '|')//phased
+				infoChar |= phased;
+			
+			//get second alt number
+			c++;
+			size_t secondAltNumber = 0;
+			if(*c!='.')
+				secondAltNumber = atoui32(c);
+			if(secondAltNumber == 0)
+				infoChar |= secondIsRef;
+			
+			if(firstAltNumber==secondAltNumber)//if it is homozygous
+				infoChar |= homozygous;
+			else if(secondAltNumber != 0)
+				secondPloidLength = writeAltToBuf(buf+9+idLength+firstPloidLength,secondAltNumber);
+		}
+		buf[8] = secondPloidLength;
+		
+		//write info byte
+		buf[4] = infoChar;
+		return 9+idLength+firstPloidLength+secondPloidLength;
+	}		
 		
 	const char * getChrom() const
 	{
@@ -178,14 +295,14 @@ struct VariantDetails{
 		return getShortString(id,idOnHeap);
 	}	
 
-	uint64_t getPos() const
+	uint32_t getPos() const
 	{
 		return pos;
 	}
 	
 	private:
 	
-	uint64_t pos;
+	uint32_t pos;
 	
 	bool chromOnHeap;
 	bool idOnHeap;
@@ -415,12 +532,39 @@ class VCF
 				{
 					out << variantDetails[v.getVariantNumber()] << '\t' << v.getVariantString() << '\n';
 				}
+				break;
 			}
 		}
 	}
-	bool readVCF(const char * filename = "")
+	
+	void printSampleBinary(std::string id)
 	{
-		FileReader inFile(1048576,true);
+		for(auto s: samples)
+		{
+			if(s.getId()==id)
+			{
+				size_t buffSize = 1000000;
+				char * buf = new char[1000000];
+				size_t pos = 0;
+				std::ofstream out(id+".bvcf",std::ofstream::out|std::ofstream::binary);
+				for(const SampleVariant &v : s.getVariants())
+				{
+					pos += variantDetails[v.getVariantNumber()].writeVariant(buf+pos,v.getVariantString());
+					if(pos > buffSize - 100000)
+					{
+						out.write(buf,pos);
+						pos = 0;
+					}
+				}
+				out.write(buf,pos);
+				break;
+			}
+		}
+	}
+	
+	bool readVCF(bool gzipped = false, const char * filename = "")
+	{
+		FileReader inFile(1048576,gzipped);
 		if(filename[0]=='\0')
 		{
 			inFile.readFromStdin();
@@ -456,7 +600,6 @@ class VCF
 				break;
 			}
 		}
-		std::cout << "test2"<<std::endl;
 		//read in variants for each sample
 		while(inFile.isGood())
 		{
@@ -492,13 +635,15 @@ class VCF
 int main()
 {
 	VCF vcf;
-	vcf.readVCF("minag100k.vcf.gz");
-	//vcf.readVCF();//read from stdin
+	bool gzipped = true;
+	vcf.readVCF(gzipped,"minag100k.vcf.gz");
+	//vcf.readVCF(gzipped);//read from stdin
 	std::vector<std::string> samples({"AA0114-C","AA0050-C","AC0139-C","AJ0038-C","AC0099-C",
 	"AB0097-C","AJ0044-C","AB0282-C","AN0039-C","AK0078-C"});
 	for(std::string s: samples)
 	{
 		vcf.printSample(s);
+		vcf.printSampleBinary(s);
 	}
 	return 0;
 }
